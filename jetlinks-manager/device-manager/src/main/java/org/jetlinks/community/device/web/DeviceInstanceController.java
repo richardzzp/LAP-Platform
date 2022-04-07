@@ -1,11 +1,14 @@
 package org.jetlinks.community.device.web;
 
+import com.alibaba.fastjson.JSONObject;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Getter;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
+import org.hswebframework.ezorm.core.param.Column;
+import org.hswebframework.ezorm.core.param.Sort;
 import org.hswebframework.ezorm.rdb.exception.DuplicateKeyException;
 import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
 import org.hswebframework.ezorm.rdb.mapping.defaults.SaveResult;
@@ -63,13 +66,12 @@ import reactor.util.function.Tuple2;
 import reactor.util.function.Tuple4;
 import reactor.util.function.Tuples;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -261,8 +263,8 @@ public class DeviceInstanceController implements
     public Mono<DeviceProperty> getDeviceLatestProperty(@PathVariable @Parameter(description = "设备ID") String deviceId,
                                                         @PathVariable @Parameter(description = "属性ID") String property) {
         return deviceDataService.queryEachOneProperties(deviceId, QueryParamEntity.of(), property)
-                                .take(1)
-                                .singleOrEmpty()
+            .take(1)
+            .singleOrEmpty()
             ;
     }
 
@@ -320,6 +322,79 @@ public class DeviceInstanceController implements
         return deviceDataService.queryDeviceMessageLog(deviceId, entity);
     }
 
+    //未来预测
+    @GetMapping("/{deviceId:.+}/predict")
+    @QueryAction
+    @QueryOperation(summary = "查询设备日志数据")
+    public Mono<double[]> predict(@PathVariable @Parameter(description = "设备ID") String deviceId) {
+        //todo
+//            return Mono.fromCallable(DeviceInstanceController::func);
+        QueryParamEntity entity = new QueryParamEntity();
+        entity.setPageIndex(0);
+        //提取前50个数据
+        entity.setPageSize(50);
+        List<Sort> sorts = new ArrayList<>();
+        Sort tempSort = new Sort();
+        tempSort.setName("timestamp");
+        tempSort.desc();
+        sorts.add(tempSort);
+        entity.setSorts(sorts);
+        return deviceDataService.queryDeviceMessageLog(deviceId, entity)
+            .flatMap(data -> {
+                return Mono.fromCallable(() -> {
+                    //存放7个数据
+                    List<double[]> datas = new ArrayList<>();
+                    List<DeviceOperationLogEntity> logs = data.getData();
+                    for (DeviceOperationLogEntity d : logs) {
+                        if (d.getType().name().equals("reportProperty")) {
+                            if (datas.size() == 7)
+                                break;
+                            JSONObject jsonObject = JSONObject.parseObject(String.valueOf(d.getContent()));
+                            JSONObject properties = JSONObject.parseObject(jsonObject.getString("properties"));
+                            datas.add(new double[]{properties.getDouble("airTemperature"),properties.getDouble("wetBulbTemperature"),properties.getDouble("solarRadiation")});
+                        }
+                    }
+                    StringBuilder inputData=new StringBuilder("C:\\ProgramData\\Anaconda3\\envs\\predict\\python predict.py");
+                    for(double[] d:datas){
+                        inputData.append(" ").append(d[0]).append(" ").append(d[1]).append(" ").append(d[2]);
+                    }
+                    //调用python
+                    String cmd = inputData.toString();
+                    BufferedReader br = null;
+                    BufferedReader brError = null;
+                    String line = null;
+                    try {
+                        //执行exe  cmd可以为字符串(exe存放路径)也可为数组，调用exe时需要传入参数时，可以传数组调用(参数有顺序要求)
+                        Process p = Runtime.getRuntime().exec(cmd);
+                        br = new BufferedReader(new InputStreamReader(p.getInputStream()));
+                        brError = new BufferedReader(new InputStreamReader(p.getErrorStream()));
+                        while ((line = br.readLine()) != null || (line = brError.readLine()) != null) {
+                            //输出exe输出的信息以及错误信息
+                            if(!Character.isDigit(line.charAt(0))){
+                                System.out.println(line);
+                                continue;
+                            }
+                            String[] output=line.split(" ");
+                            return new double[]{Double.parseDouble(output[0]),Double.parseDouble(output[1]),Double.parseDouble(output[2])};
+                        }
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    } finally {
+                        if (br != null) {
+                            try {
+                                br.close();
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
+                        }
+                    }
+
+                    return null;
+                });
+            });
+    }
+
+
     //删除标签
     @DeleteMapping("/{deviceId}/tag/{tagId:.+}")
     @SaveAction
@@ -327,10 +402,10 @@ public class DeviceInstanceController implements
     public Mono<Void> deleteDeviceTag(@PathVariable @Parameter(description = "设备ID") String deviceId,
                                       @PathVariable @Parameter(description = "标签ID") String tagId) {
         return tagRepository.createDelete()
-                            .where(DeviceTagEntity::getDeviceId, deviceId)
-                            .and(DeviceTagEntity::getId, tagId)
-                            .execute()
-                            .then();
+            .where(DeviceTagEntity::getDeviceId, deviceId)
+            .and(DeviceTagEntity::getId, tagId)
+            .execute()
+            .then();
     }
 
     /**
@@ -345,7 +420,7 @@ public class DeviceInstanceController implements
     @Operation(summary = "批量删除设备")
     public Mono<Integer> deleteBatch(@RequestBody Mono<List<String>> idList) {
         return idList.flatMapMany(Flux::fromIterable)
-                     .as(service::deleteById);
+            .as(service::deleteById);
     }
 
     /**
@@ -374,9 +449,9 @@ public class DeviceInstanceController implements
     @Operation(summary = "批量激活设备")
     public Mono<Integer> deployBatch(@RequestBody Mono<List<String>> idList) {
         return idList.flatMapMany(service::findById)
-                     .as(service::deploy)
-                     .map(DeviceDeployResult::getTotal)
-                     .reduce(Math::addExact);
+            .as(service::deploy)
+            .map(DeviceDeployResult::getTotal)
+            .reduce(Math::addExact);
     }
 
     /**
@@ -402,8 +477,8 @@ public class DeviceInstanceController implements
     @Operation(summary = "获取设备全部标签数据")
     public Flux<DeviceTagEntity> getDeviceTags(@PathVariable @Parameter(description = "设备ID") String deviceId) {
         return tagRepository.createQuery()
-                            .where(DeviceTagEntity::getDeviceId, deviceId)
-                            .fetch();
+            .where(DeviceTagEntity::getDeviceId, deviceId)
+            .fetch();
     }
 
     //保存设备标签
@@ -435,9 +510,9 @@ public class DeviceInstanceController implements
             registry.getProduct(productId).flatMap(DeviceProductOperator::getMetadata),
             //配置
             metadataManager.getDeviceConfigMetadataByProductId(productId)
-                           .flatMapIterable(ConfigMetadata::getProperties)
-                           .collectList()
-                           .defaultIfEmpty(Collections.emptyList())
+                .flatMapIterable(ConfigMetadata::getProperties)
+                .collectList()
+                .defaultIfEmpty(Collections.emptyList())
         );
     }
 
@@ -477,12 +552,12 @@ public class DeviceInstanceController implements
                     .buffer(100)//每100条数据保存一次
                     .publishOn(Schedulers.single())
                     .concatMap(buffer ->
-                                   Mono.zip(
-                                       service.save(Flux.fromIterable(buffer).map(Tuple2::getT1)),
-                                       tagRepository
-                                           .save(Flux.fromIterable(buffer).flatMapIterable(Tuple2::getT2))
-                                           .defaultIfEmpty(SaveResult.of(0, 0))
-                                   ))
+                        Mono.zip(
+                            service.save(Flux.fromIterable(buffer).map(Tuple2::getT1)),
+                            tagRepository
+                                .save(Flux.fromIterable(buffer).flatMapIterable(Tuple2::getT2))
+                                .defaultIfEmpty(SaveResult.of(0, 0))
+                        ))
                     .map(res -> ImportDeviceInstanceResult.success(res.getT1()))
                     .onErrorResume(err -> Mono.just(ImportDeviceInstanceResult.error(err)));
             });
@@ -496,16 +571,16 @@ public class DeviceInstanceController implements
                                              ServerHttpResponse response,
                                              @PathVariable @Parameter(description = "文件格式,支持csv,xlsx") String format) throws IOException {
         response.getHeaders().set(HttpHeaders.CONTENT_DISPOSITION,
-                                  "attachment; filename=".concat(URLEncoder.encode("设备导入模版." + format, StandardCharsets.UTF_8
-                                      .displayName())));
+            "attachment; filename=".concat(URLEncoder.encode("设备导入模版." + format, StandardCharsets.UTF_8
+                .displayName())));
         return getDeviceProductDetail(productId)
             .map(tp4 -> DeviceExcelInfo.getTemplateHeaderMapping(tp4.getT3().getTags(), tp4.getT4()))
             .defaultIfEmpty(DeviceExcelInfo.getTemplateHeaderMapping(Collections.emptyList(), Collections.emptyList()))
             .flatMapMany(headers ->
-                             ReactorExcel.<DeviceExcelInfo>writer(format)
-                                 .headers(headers)
-                                 .converter(DeviceExcelInfo::toMap)
-                                 .writeBuffer(Flux.empty()))
+                ReactorExcel.<DeviceExcelInfo>writer(format)
+                    .headers(headers)
+                    .converter(DeviceExcelInfo::toMap)
+                    .writeBuffer(Flux.empty()))
             .doOnError(err -> log.error(err.getMessage(), err))
             .map(bufferFactory::wrap)
             .as(response::writeWith);
@@ -520,11 +595,11 @@ public class DeviceInstanceController implements
                              @Parameter(hidden = true) QueryParamEntity parameter,
                              @PathVariable @Parameter(description = "文件格式,支持csv,xlsx") String format) throws IOException {
         response.getHeaders().set(HttpHeaders.CONTENT_DISPOSITION,
-                                  "attachment; filename=".concat(URLEncoder.encode("设备实例." + format, StandardCharsets.UTF_8
-                                      .displayName())));
+            "attachment; filename=".concat(URLEncoder.encode("设备实例." + format, StandardCharsets.UTF_8
+                .displayName())));
         parameter.setPaging(false);
         parameter.toNestQuery(q -> q.is(DeviceInstanceEntity::getProductId, productId));
-       return Authentication
+        return Authentication
             .currentReactive()
             .flatMap(auth -> {
                 //从当前用户的维度中获取机构信息,需要将用户绑定到对应到机构.
@@ -546,45 +621,45 @@ public class DeviceInstanceController implements
                                 .collect(Collectors.toList())
                         ))
                     .defaultIfEmpty(Tuples.of(DeviceExcelInfo.getExportHeaderMapping(Collections.emptyList(), Collections
-                                                  .emptyList()),
-                                              Collections.emptyList()))
+                            .emptyList()),
+                        Collections.emptyList()))
                     .flatMapMany(headerAndConfigKey -> ReactorExcel
                         .<DeviceExcelInfo>writer(format)
                         .headers(headerAndConfigKey.getT1())
                         .converter(DeviceExcelInfo::toMap)
                         .writeBuffer(service
-                                         .query(parameter)
-                                         .flatMap(entity -> {
-                                             DeviceExcelInfo exportEntity = FastBeanCopier.copy(entity, new DeviceExcelInfo(), "state");
-                                             exportEntity.setOrgName(orgMapping.get(entity.getOrgId()));
-                                             exportEntity.setState(entity.getState().getText());
-                                             return registry
-                                                 .getDevice(entity.getId())
-                                                 .flatMap(deviceOperator -> deviceOperator
-                                                     .getSelfConfigs(headerAndConfigKey.getT2())
-                                                     .map(Values::getAllValues))
-                                                 .doOnNext(configs -> exportEntity
-                                                     .getConfiguration()
-                                                     .putAll(configs))
-                                                 .thenReturn(exportEntity);
-                                         })
-                                         .buffer(200)
-                                         .flatMap(list -> {
-                                             Map<String, DeviceExcelInfo> importInfo = list
-                                                 .stream()
-                                                 .collect(Collectors.toMap(DeviceExcelInfo::getId, Function.identity()));
-                                             return tagRepository
-                                                 .createQuery()
-                                                 .where()
-                                                 .in(DeviceTagEntity::getDeviceId, importInfo.keySet())
-                                                 .fetch()
-                                                 .collect(Collectors.groupingBy(DeviceTagEntity::getDeviceId))
-                                                 .flatMapIterable(Map::entrySet)
-                                                 .doOnNext(entry -> importInfo
-                                                     .get(entry.getKey())
-                                                     .setTags(entry.getValue()))
-                                                 .thenMany(Flux.fromIterable(list));
-                                         })
+                                .query(parameter)
+                                .flatMap(entity -> {
+                                    DeviceExcelInfo exportEntity = FastBeanCopier.copy(entity, new DeviceExcelInfo(), "state");
+                                    exportEntity.setOrgName(orgMapping.get(entity.getOrgId()));
+                                    exportEntity.setState(entity.getState().getText());
+                                    return registry
+                                        .getDevice(entity.getId())
+                                        .flatMap(deviceOperator -> deviceOperator
+                                            .getSelfConfigs(headerAndConfigKey.getT2())
+                                            .map(Values::getAllValues))
+                                        .doOnNext(configs -> exportEntity
+                                            .getConfiguration()
+                                            .putAll(configs))
+                                        .thenReturn(exportEntity);
+                                })
+                                .buffer(200)
+                                .flatMap(list -> {
+                                    Map<String, DeviceExcelInfo> importInfo = list
+                                        .stream()
+                                        .collect(Collectors.toMap(DeviceExcelInfo::getId, Function.identity()));
+                                    return tagRepository
+                                        .createQuery()
+                                        .where()
+                                        .in(DeviceTagEntity::getDeviceId, importInfo.keySet())
+                                        .fetch()
+                                        .collect(Collectors.groupingBy(DeviceTagEntity::getDeviceId))
+                                        .flatMapIterable(Map::entrySet)
+                                        .doOnNext(entry -> importInfo
+                                            .get(entry.getKey())
+                                            .setTags(entry.getValue()))
+                                        .thenMany(Flux.fromIterable(list));
+                                })
                             , 512 * 1024))//缓冲512k
                     .doOnError(err -> log.error(err.getMessage(), err))
                     .map(bufferFactory::wrap)
@@ -601,8 +676,8 @@ public class DeviceInstanceController implements
                              @Parameter(hidden = true) QueryParamEntity parameter,
                              @PathVariable @Parameter(description = "文件格式,支持csv,xlsx") String format) throws IOException {
         response.getHeaders().set(HttpHeaders.CONTENT_DISPOSITION,
-                                  "attachment; filename=".concat(URLEncoder.encode("设备实例." + format, StandardCharsets.UTF_8
-                                      .displayName())));
+            "attachment; filename=".concat(URLEncoder.encode("设备实例." + format, StandardCharsets.UTF_8
+                .displayName())));
         return ReactorExcel.<DeviceExcelInfo>writer(format)
             .headers(DeviceExcelInfo.getExportHeaderMapping(Collections.emptyList(), Collections.emptyList()))
             .converter(DeviceExcelInfo::toMap)
@@ -629,8 +704,8 @@ public class DeviceInstanceController implements
         return Mono
             .zip(registry.getDevice(deviceId), shadow)
             .flatMap(tp2 -> tp2.getT1()
-                               .setConfig(DeviceConfigKey.shadow, tp2.getT2())
-                               .thenReturn(tp2.getT2()));
+                .setConfig(DeviceConfigKey.shadow, tp2.getT2())
+                .thenReturn(tp2.getT2()));
     }
 
     //获取设备影子
@@ -675,10 +750,10 @@ public class DeviceInstanceController implements
         return param
             .flatMapMany(request -> deviceDataService
                 .aggregationPropertiesByDevice(deviceId,
-                                               request.getQuery(),
-                                               request
-                                                   .getColumns()
-                                                   .toArray(new DeviceDataService.DevicePropertyAggregation[0]))
+                    request.getQuery(),
+                    request
+                        .getColumns()
+                        .toArray(new DeviceDataService.DevicePropertyAggregation[0]))
             )
             .map(AggregationData::values);
     }
@@ -744,8 +819,8 @@ public class DeviceInstanceController implements
             entity.setWhere(where);
             entity.includes("id");
             return service.query(entity)
-                          .flatMap(device -> registry.getDevice(device.getId()))
-                          .cache();
+                .flatMap(device -> registry.getDevice(device.getId()))
+                .cache();
         });
         return messages
             .flatMap(message -> {
@@ -812,11 +887,11 @@ public class DeviceInstanceController implements
             .getDevice(id)
             .flatMap(DeviceOperator::resetMetadata)
             .then(service
-                      .createUpdate()
-                      .setNull(DeviceInstanceEntity::getDeriveMetadata)
-                      .where(DeviceInstanceEntity::getId, id)
-                      .execute()
-                      .then());
+                .createUpdate()
+                .setNull(DeviceInstanceEntity::getDeriveMetadata)
+                .where(DeviceInstanceEntity::getId, id)
+                .execute()
+                .then());
     }
 
     //合并产品的物模型
