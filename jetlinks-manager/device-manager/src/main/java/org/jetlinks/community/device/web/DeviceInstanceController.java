@@ -7,7 +7,6 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Getter;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
-import org.hswebframework.ezorm.core.param.Column;
 import org.hswebframework.ezorm.core.param.Sort;
 import org.hswebframework.ezorm.rdb.exception.DuplicateKeyException;
 import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
@@ -27,6 +26,7 @@ import org.hswebframework.web.exception.NotFoundException;
 import org.hswebframework.web.exception.ValidationException;
 import org.hswebframework.web.id.IDGenerator;
 import org.jetlinks.community.device.entity.*;
+import org.jetlinks.community.device.entity.GraphTotal;
 import org.jetlinks.community.device.enums.DeviceState;
 import org.jetlinks.community.device.response.DeviceDeployResult;
 import org.jetlinks.community.device.response.DeviceDetail;
@@ -71,6 +71,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -323,12 +324,13 @@ public class DeviceInstanceController implements
     }
 
     //未来预测
-    @GetMapping("/{deviceId:.+}/predict")
+    @GetMapping("/predict")
     @QueryAction
     @QueryOperation(summary = "查询设备日志数据")
-    public Mono<double[]> predict(@PathVariable @Parameter(description = "设备ID") String deviceId) {
+    public Mono<GraphTotal> predict() {
         //todo
 //            return Mono.fromCallable(DeviceInstanceController::func);
+        String deviceId="123";
         QueryParamEntity entity = new QueryParamEntity();
         entity.setPageIndex(0);
         //提取前50个数据
@@ -347,17 +349,20 @@ public class DeviceInstanceController implements
                     List<DeviceOperationLogEntity> logs = data.getData();
                     for (DeviceOperationLogEntity d : logs) {
                         if (d.getType().name().equals("reportProperty")) {
-                            if (datas.size() == 7)
+                            if (datas.size() == 23)
                                 break;
                             JSONObject jsonObject = JSONObject.parseObject(String.valueOf(d.getContent()));
                             JSONObject properties = JSONObject.parseObject(jsonObject.getString("properties"));
-                            datas.add(new double[]{properties.getDouble("airTemperature"),properties.getDouble("wetBulbTemperature"),properties.getDouble("solarRadiation")});
+                            datas.add(new double[]{properties.getDouble("airTemperature"), properties.getDouble("wetBulbTemperature"), properties.getDouble("solarRadiation")});
                         }
                     }
-                    StringBuilder inputData=new StringBuilder("C:\\ProgramData\\Anaconda3\\envs\\predict\\python predict.py");
-                    for(double[] d:datas){
-                        inputData.append(" ").append(d[0]).append(" ").append(d[1]).append(" ").append(d[2]);
+                    StringBuilder inputData = new StringBuilder("C:\\ProgramData\\Anaconda3\\envs\\predict\\python predict.py");
+                    Collections.reverse(datas);
+                    int count=0;
+                    for (int i=16;i<datas.size();i++) {
+                        inputData.append(" ").append(datas.get(i)[0]).append(" ").append(datas.get(i)[1]).append(" ").append(datas.get(i)[2]);
                     }
+                    System.out.println(inputData);
                     //调用python
                     String cmd = inputData.toString();
                     BufferedReader br = null;
@@ -370,12 +375,12 @@ public class DeviceInstanceController implements
                         brError = new BufferedReader(new InputStreamReader(p.getErrorStream()));
                         while ((line = br.readLine()) != null || (line = brError.readLine()) != null) {
                             //输出exe输出的信息以及错误信息
-                            if(!Character.isDigit(line.charAt(0))){
+                            if (!Character.isDigit(line.charAt(0))) {
                                 System.out.println(line);
                                 continue;
                             }
-                            String[] output=line.split(" ");
-                            return new double[]{Double.parseDouble(output[0]),Double.parseDouble(output[1]),Double.parseDouble(output[2])};
+                            String[] output = line.split(" ");
+                            datas.add(new double[]{Double.parseDouble(output[0]), Double.parseDouble(output[1]), Double.parseDouble(output[2])});
                         }
                     } catch (Exception e) {
                         e.printStackTrace();
@@ -388,8 +393,21 @@ public class DeviceInstanceController implements
                             }
                         }
                     }
-
-                    return null;
+                    List<GraphRow> airTemperature = new ArrayList<>();
+                    List<GraphRow> wetBulbTemperature = new ArrayList<>();
+                    List<GraphRow> solarRadiation = new ArrayList<>();
+                    int timestamp=0;
+                    Calendar c = Calendar.getInstance();
+                    c.set(Calendar.HOUR_OF_DAY, (c.get(Calendar.HOUR_OF_DAY) - 22));
+                    SimpleDateFormat sdf = new SimpleDateFormat("dd日HH时");
+                    for(double[] d:datas){
+                        airTemperature.add(new GraphRow(new GraphData(d[0],sdf.format(c.getTime()),timestamp)));
+                        wetBulbTemperature.add(new GraphRow(new GraphData(d[1],sdf.format(c.getTime()),timestamp)));
+                        solarRadiation.add(new GraphRow(new GraphData(d[2],sdf.format(c.getTime()),timestamp)));
+                        c.set(Calendar.HOUR_OF_DAY, (c.get(Calendar.HOUR_OF_DAY) +1));
+                        timestamp++;
+                    }
+                    return new GraphTotal(airTemperature,wetBulbTemperature,solarRadiation);
                 });
             });
     }
